@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Prediction Result</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: url('https://images.unsplash.com/photo-1588776814546-ec7a35b57c3b?auto=format&fit=crop&w=1500&q=80') no-repeat center center fixed;
+            background-size: cover;
+            color: #333;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        .overlay {
+            background-color: rgba(255, 255, 255, 0.95);
+            padding: 30px;
+            border-radius: 15px;
+            margin-top: 80px;
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+        }
+        .fade-in {
+            animation: fadeIn 1s ease-in-out;
+        }
+        @keyframes fadeIn {
+            from {opacity: 0;}
+            to {opacity: 1;}
+        }
+        pre {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 0.9rem;
+            white-space: pre-wrap;
+            text-align: left;
+        }
+    </style>
+</head>
+<body class="fade-in">
+
+<div class="container">
+    <div class="overlay text-center col-md-8 mx-auto">
+        {% if disease == "❗ Unable to predict" %}
+            <div class="alert alert-warning">
+                <h4 class="alert-heading">⚠️ Invalid Report</h4>
+                <p>The uploaded PDF does not contain valid medical data. Please upload a proper blood test report.</p>
+            </div>
+        {% else %}
+            <h3 class="mb-3">✅ Predicted Disease</h3>
+            <h4 class="text-danger display-6">{{ disease }}</h4>
+            <hr>
+            <p class="lead"><strong>💊 Recommendation:</strong></p>
+            <p class="text-muted">{{ recommendation }}</p>
+        {% endif %}
+
+        <hr>
+        <p>🧪 Platelet: {{ extracted['Platelet'] }}</p>
+
+        <a href="/" class="btn btn-secondary mt-4">🔁 Upload Another Report</a>
+    </div>
+</div>
+
+</body>
+</html>
