@@ -1,4 +1,7 @@
 flask
+gunicorn
 pdfplumber
-pandas
 scikit-learn
+pandas
+numpy
+
