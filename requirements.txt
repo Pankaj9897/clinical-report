@@ -4,4 +4,4 @@ pdfplumber
 scikit-learn
 pandas
 numpy
-
+uvicorn
