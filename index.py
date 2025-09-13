@@ -121,7 +121,7 @@ def extract_features_from_text(text):
         # platelet normalization
         if feat == 'Platelet':
             val = normalize_platelet(val)
-        extracted[feat] = float(val) if (val is not None) else 0.0
+        extracted[feat] = float(val) if (val is not None) else np.nan
 
     return extracted
 
