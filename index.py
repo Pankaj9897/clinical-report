@@ -2,6 +2,7 @@
 import os
 import uvicorn
 from fastapi import FastAPI, File, UploadFile
+from fastapi.responses import HTMLResponse
 import pickle
 import numpy as np
 import pandas as pd
@@ -110,21 +111,60 @@ def get_recommendation(disease: str) -> str:
     }
     return recommendations.get(disease, "Consult a specialist for further evaluation.")
 
-# --- API Endpoints ---
+# --- HTML Templates ---
 
-@app.get("/")
-async def read_root():
-    return {"message": "Welcome to the Blood Report Analysis API. Please use the /predict endpoint to upload a PDF."}
+def get_error_page(message: str) -> str:
+    """Returns an HTML page for displaying an error."""
+    return f"""
+    <html>
+        <head><title>Error</title></head>
+        <body>
+            <h1>An Error Occurred</h1>
+            <p>{message}</p>
+            <a href="/">Try again</a>
+        </body>
+    </html>
+    """
 
-@app.post("/predict/")
-async def predict_from_pdf(file: UploadFile = File(...)):
+# --- API Endpoints with UI ---
+
+@app.get("/", response_class=HTMLResponse)
+async def upload_page():
+    """Serves the main page with the file upload form."""
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Blood Report Analyzer</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 40px; background-color: #f4f7f6; }
+            .container { max-width: 600px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+            h1 { color: #333; }
+            input[type="file"] { border: 1px solid #ccc; padding: 10px; border-radius: 4px; }
+            input[type="submit"] { background-color: #007bff; color: white; padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; }
+            input[type="submit"]:hover { background-color: #0056b3; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Upload Blood Report PDF</h1>
+            <form action="/predict/" enctype="multipart/form-data" method="post">
+                <input name="file" type="file" accept=".pdf" required>
+                <br><br>
+                <input type="submit" value="Analyze Report">
+            </form>
+        </div>
+    </body>
+    </html>
     """
-    Accepts a PDF file upload, extracts features, and returns a disease prediction.
-    """
+    return HTMLResponse(content=html_content)
+
+@app.post("/predict/", response_class=HTMLResponse)
+async def predict_and_show_results(file: UploadFile = File(...)):
+    """Accepts a PDF, processes it, and displays the results on a new HTML page."""
     if model is None or scaler is None:
-        return {"error": "Model or scaler not available on the server. Please check logs."}
-    
-    # Use a temporary file to save the uploaded PDF
+        return HTMLResponse(content=get_error_page("Model or scaler not available on the server."), status_code=500)
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp_path = tmp.name
         tmp.write(await file.read())
@@ -132,40 +172,71 @@ async def predict_from_pdf(file: UploadFile = File(...)):
     try:
         text = extract_text_from_pdf(tmp_path)
         if not text:
-            return {"error": "Could not extract any text from the PDF."}
+            return HTMLResponse(content=get_error_page("Could not extract any text from the PDF."), status_code=400)
 
         features = extract_features_from_text(text)
-
-        # Build DataFrame in the expected order for the model
         input_data = pd.DataFrame([features])[expected_features]
 
-        # Handle missing values using a simple imputation (filling with mean)
         if input_data.isnull().values.any():
-            # For simplicity, we'll fill with 0, but a more robust method would be to use column means
-            # from the training set if available.
             input_data = input_data.fillna(0)
 
-        # Scale the features and make a prediction
         input_scaled = scaler.transform(input_data)
         prediction = model.predict(input_scaled)[0]
         recommendation = get_recommendation(prediction)
 
-        return {
-            "prediction": str(prediction),
-            "recommendation": recommendation,
-            "extracted_features": {k: (v if not np.isnan(v) else None) for k, v in features.items()},
-            "raw_text_summary": text[:1000] + "..." # Return a summary of the text
-        }
+        # Build the HTML table for extracted features
+        features_html = ""
+        for key, value in features.items():
+            display_value = round(value, 2) if isinstance(value, (int, float)) and not np.isnan(value) else "<strong>Not Found</strong>"
+            features_html += f"<tr><td>{key}</td><td>{display_value}</td></tr>"
+
+        # The final HTML page to display results
+        result_html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Analysis Result</title>
+            <style>
+                body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 40px; background-color: #f4f7f6; }}
+                .container {{ max-width: 800px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }}
+                h1, h2, h3 {{ color: #333; }}
+                .prediction {{ color: #007bff; font-weight: bold; }}
+                table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
+                th, td {{ padding: 12px; border: 1px solid #ddd; text-align: left; }}
+                th {{ background-color: #007bff; color: white; }}
+                tr:nth-child(even) {{ background-color: #f2f2f2; }}
+                a {{ color: #007bff; text-decoration: none; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Analysis Result</h1>
+                <h2>Prediction: <span class="prediction">{prediction}</span></h2>
+                <p><strong>Recommendation:</strong> {recommendation}</p>
+                
+                <h3>Extracted Values from PDF</h3>
+                <table>
+                    <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+                    <tbody>{features_html}</tbody>
+                </table>
+                <br>
+                <a href="/">Upload Another Report</a>
+            </div>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=result_html)
     except Exception as e:
         logging.exception(f"Prediction error: {e}")
-        return {"error": f"An error occurred during processing: {e}"}
+        return HTMLResponse(content=get_error_page(f"An error occurred during processing: {e}"), status_code=500)
     finally:
-        # Clean up the temporary file
         os.remove(tmp_path)
 
 # This block allows running the app directly with `python main.py` for local testing
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
+
 
 
