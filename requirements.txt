@@ -1,7 +1,8 @@
-flask
+
 gunicorn
 pdfplumber
 scikit-learn
 pandas
 numpy
 uvicorn
+fastapi
