@@ -1,4 +1,3 @@
-# app_improved.py
 from flask import Flask, request, render_template, jsonify
 import pickle
 import pdfplumber
