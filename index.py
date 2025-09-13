@@ -1,116 +1,92 @@
-from flask import Flask, request, render_template, jsonify
+# 1. Import necessary libraries
+import os
+import uvicorn
+from fastapi import FastAPI, File, UploadFile
 import pickle
-import pdfplumber
+import numpy as np
 import pandas as pd
+import pdfplumber
 import re
 import tempfile
-import os
-import numpy as np
-from werkzeug.utils import secure_filename
 import logging
 
-app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 5 MB max upload
-
+# --- Configuration ---
+# Configure logging to see informational messages
 logging.basicConfig(level=logging.INFO)
+app = FastAPI()
 
-# Load model and scaler safely
+# --- Load Model and Scaler ---
+# Load the pre-trained model and scaler when the application starts.
 MODEL_PATH = "model.pkl"
 SCALER_PATH = "scaler.pkl"
 
 try:
     with open(MODEL_PATH, "rb") as f:
         model = pickle.load(f)
-    logging.info("Model loaded.")
+    logging.info("Model loaded successfully.")
 except Exception as e:
-    logging.error("Failed to load model: %s", e)
+    logging.error(f"Failed to load model from {MODEL_PATH}: {e}")
     model = None
 
 try:
     with open(SCALER_PATH, "rb") as f:
         scaler = pickle.load(f)
-    logging.info("Scaler loaded.")
+    logging.info("Scaler loaded successfully.")
 except Exception as e:
-    logging.error("Failed to load scaler: %s", e)
+    logging.error(f"Failed to load scaler from {SCALER_PATH}: {e}")
     scaler = None
 
+# Define the exact feature names the model expects, in the correct order.
 expected_features = [
     'Hemoglobin', 'WBC', 'Platelet', 'ESR',
     'Creatinine', 'Urea', 'SGPT_ALT', 'SGPT_AST',
     'TSH', 'Blood_Sugar', 'Cholesterol'
 ]
 
-# Robust text extraction from PDF
-def extract_text_from_pdf(path):
+# --- Helper Functions (from your Flask app) ---
+
+def extract_text_from_pdf(path: str) -> str:
+    """Extracts all text from a given PDF file."""
     texts = []
     try:
         with pdfplumber.open(path) as pdf:
             for page in pdf.pages:
                 txt = page.extract_text()
                 if txt:
-                    texts.append(txt + "\n")
+                    texts.append(txt)
     except Exception as e:
-        logging.exception("Error reading PDF: %s", e)
+        logging.exception(f"Error reading PDF: {e}")
     return "\n".join(texts)
 
-# Robust number extractor: finds the nearest number after keyword
-NUMBER_RE = r"([+-]?\d{1,3}(?:[,\d]{0,3})?(?:\.\d+)?)"
-
-def extract_number(text, keyword, max_chars_after=60):
-    """
-    Search for 'keyword' and extract the nearest numeric token after it.
-    Returns float or None.
-    """
-    # build pattern: keyword ... up to max_chars_after ... capture number
+def extract_number(text: str, keyword: str, max_chars_after=60) -> float | None:
+    """Search for a keyword and extract the nearest numeric value after it."""
+    NUMBER_RE = r"([+-]?\d{1,3}(?:[,\d]{0,3})?(?:\.\d+)?)"
     pattern = rf"{re.escape(keyword)}[^\S\r\n]{{0,{max_chars_after}}}.*?{NUMBER_RE}"
     match = re.search(pattern, text, flags=re.IGNORECASE)
     if match:
-        num_text = match.group(1)
-        # normalize comma like "1,234" -> "1234"
-        num_text = num_text.replace(",", "")
+        num_text = match.group(1).replace(",", "")
         try:
             return float(num_text)
-        except:
+        except ValueError:
             return None
-    # fallback: try any occurrence of keyword then any number after on same line
-    line_pattern = rf"^{re.escape(keyword)}.*?{NUMBER_RE}"
-    for line in text.splitlines():
-        m = re.search(line_pattern, line, flags=re.IGNORECASE)
-        if m:
-            try:
-                return float(m.group(1).replace(",", ""))
-            except:
-                return None
     return None
 
-def normalize_platelet(value):
-    """
-    Many reports show Platelet as per µL (e.g., 250000).
-    Our model expects platelet in thousands (e.g., 250).
-    Heuristic: if value > 2000 -> divide by 1000
-    """
+def normalize_platelet(value: float | None) -> float | None:
+    """Normalizes platelet count (e.g., 250000 -> 250)."""
     if value is None:
         return None
-    if value > 2000:
-        return value / 1000.0
-    return value
+    return value / 1000.0 if value > 2000 else value
 
-def extract_features_from_text(text):
-    # Keywords map: feature -> list of possible keywords in reports
+def extract_features_from_text(text: str) -> dict:
+    """Extracts all required medical features from the text using keywords."""
     keywords = {
-        'Hemoglobin': ['Hemoglobin', 'Hb', 'H b'],
-        'WBC': ['WBC', 'White Blood Cells', 'Leukocytes'],
-        'Platelet': ['Platelet', 'Platelets', 'PLT'],
-        'ESR': ['ESR', 'E.S.R'],
-        'Creatinine': ['Creatinine', 'Sr. Creatinine', 'Serum Creatinine'],
-        'Urea': ['Urea', 'Blood Urea', 'BUN'],
-        'SGPT_ALT': ['SGPT', 'ALT'],
-        'SGPT_AST': ['SGOT', 'AST'],
-        'TSH': ['TSH', 'Thyroid Stimulating Hormone'],
+        'Hemoglobin': ['Hemoglobin', 'Hb', 'H b'], 'WBC': ['WBC', 'White Blood Cells', 'Leukocytes'],
+        'Platelet': ['Platelet', 'Platelets', 'PLT'], 'ESR': ['ESR', 'E.S.R'],
+        'Creatinine': ['Creatinine', 'Sr. Creatinine', 'Serum Creatinine'], 'Urea': ['Urea', 'Blood Urea', 'BUN'],
+        'SGPT_ALT': ['SGPT', 'ALT'], 'SGPT_AST': ['SGOT', 'AST'], 'TSH': ['TSH', 'Thyroid Stimulating Hormone'],
         'Blood_Sugar': ['Blood Sugar', 'Glucose', 'Fasting Blood Sugar', 'FBS'],
         'Cholesterol': ['Cholesterol', 'Total Cholesterol']
     }
-
     extracted = {}
     for feat, kws in keywords.items():
         val = None
@@ -118,14 +94,13 @@ def extract_features_from_text(text):
             val = extract_number(text, k)
             if val is not None:
                 break
-        # platelet normalization
         if feat == 'Platelet':
             val = normalize_platelet(val)
-        extracted[feat] = float(val) if (val is not None) else np.nan
-
+        extracted[feat] = float(val) if val is not None else np.nan
     return extracted
 
-def get_recommendation(disease):
+def get_recommendation(disease: str) -> str:
+    """Returns a health recommendation based on the predicted disease."""
     recommendations = {
         'Anemia': "Take iron-rich food and supplements. Consult a physician for confirmation.",
         'Infection': "Consult doctor for antibiotics and further tests.",
@@ -133,128 +108,64 @@ def get_recommendation(disease):
         'Viral Infection': "Hydrate, rest, and consult if fever persists.",
         'Normal': "Everything looks good. Stay healthy!"
     }
-    return recommendations.get(disease, "Consult a specialist.")
+    return recommendations.get(disease, "Consult a specialist for further evaluation.")
 
-# HTML upload page route
-@app.route("/", methods=["GET", "POST"])
-def upload_file():
-    if request.method == "POST":
-        file = request.files.get("file")
-        if not file:
-            return render_template("result.html",
-                                   disease="Unable to predict",
-                                   recommendation="No file uploaded.",
-                                   extracted={},
-                                   raw_text="")
-        filename = secure_filename(file.filename or "report.pdf")
-        # use tempfile to avoid collisions and auto-clean
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as tmp:
-            tmp_path = tmp.name
-            file.save(tmp_path)
+# --- API Endpoints ---
 
-        try:
-            text = extract_text_from_pdf(tmp_path)
-            features = extract_features_from_text(text)
+@app.get("/")
+async def read_root():
+    return {"message": "Welcome to the Blood Report Analysis API. Please use the /predict endpoint to upload a PDF."}
 
-            if all(v == 0.0 for v in features.values()):
-                return render_template("result.html",
-                                       disease="Unable to predict",
-                                       recommendation="Uploaded PDF does not contain valid blood test values or format not recognized.",
-                                       extracted=features,
-                                       raw_text=text)
-
-            # ensure model/scaler loaded
-            if model is None or scaler is None:
-                return render_template("result.html",
-                                       disease="Error",
-                                       recommendation="Model or scaler not available on server.",
-                                       extracted=features,
-                                       raw_text=text)
-
-            # build dataframe in expected order
-            input_data = pd.DataFrame([features])[expected_features]
-            # handle missing/nan by simple imputation (mean of column) to avoid scaler errors
-            input_data = input_data.replace(0.0, np.nan)
-            if input_data.isnull().any().any():
-                # simple impute with column means (or zeros) - here we use column means (if scaler expects)
-                input_data = input_data.fillna(input_data.mean().fillna(0))
-
-            input_scaled = scaler.transform(input_data)
-            prediction = model.predict(input_scaled)[0]
-            recommendation = get_recommendation(prediction)
-
-            return render_template("result.html",
-                                   disease=prediction,
-                                   recommendation=recommendation,
-                                   extracted=features,
-                                   raw_text=text)
-        except Exception as e:
-            logging.exception("Prediction error: %s", e)
-            return render_template("result.html",
-                                   disease="Error",
-                                   recommendation=f"An error occurred during processing: {e}",
-                                   extracted={},
-                                   raw_text="")
-        finally:
-            # cleanup temp file
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
-
-    return render_template("upload.html")
-
-# Optional JSON API for programmatic usage
-@app.route("/api/predict", methods=["POST"])
-def api_predict():
+@app.post("/predict/")
+async def predict_from_pdf(file: UploadFile = File(...)):
     """
-    Accepts multipart form upload with 'file' or raw PDF bytes.
-    Returns JSON with prediction and extracted values.
+    Accepts a PDF file upload, extracts features, and returns a disease prediction.
     """
-    if 'file' not in request.files:
-        return jsonify({"error": "no file provided"}), 400
-    file = request.files['file']
-    if not file:
-        return jsonify({"error": "no file"}), 400
-    filename = secure_filename(file.filename or "report.pdf")
-    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(filename)[1]) as tmp:
+    if model is None or scaler is None:
+        return {"error": "Model or scaler not available on the server. Please check logs."}
+    
+    # Use a temporary file to save the uploaded PDF
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp_path = tmp.name
-        file.save(tmp_path)
+        tmp.write(await file.read())
 
     try:
         text = extract_text_from_pdf(tmp_path)
+        if not text:
+            return {"error": "Could not extract any text from the PDF."}
+
         features = extract_features_from_text(text)
 
-        if all(v == 0.0 for v in features.values()):
-            return jsonify({
-                "disease": None,
-                "recommendation": "Uploaded PDF does not contain valid blood test values.",
-                "extracted": features,
-                "raw_text": text
-            }), 400
-
-        if model is None or scaler is None:
-            return jsonify({"error": "model/scaler not available"}), 500
-
+        # Build DataFrame in the expected order for the model
         input_data = pd.DataFrame([features])[expected_features]
-        input_data = input_data.replace(0.0, np.nan)
-        input_data = input_data.fillna(input_data.mean().fillna(0))
+
+        # Handle missing values using a simple imputation (filling with mean)
+        if input_data.isnull().values.any():
+            # For simplicity, we'll fill with 0, but a more robust method would be to use column means
+            # from the training set if available.
+            input_data = input_data.fillna(0)
+
+        # Scale the features and make a prediction
         input_scaled = scaler.transform(input_data)
         prediction = model.predict(input_scaled)[0]
         recommendation = get_recommendation(prediction)
 
-        return jsonify({
-            "disease": str(prediction),
+        return {
+            "prediction": str(prediction),
             "recommendation": recommendation,
-            "extracted": features,
-            "raw_text": text
-        })
+            "extracted_features": {k: (v if not np.isnan(v) else None) for k, v in features.items()},
+            "raw_text_summary": text[:1000] + "..." # Return a summary of the text
+        }
     except Exception as e:
-        logging.exception("API predict error: %s", e)
-        return jsonify({"error": str(e)}), 500
+        logging.exception(f"Prediction error: {e}")
+        return {"error": f"An error occurred during processing: {e}"}
     finally:
-        try:
-            os.remove(tmp_path)
-        except:
-            pass
-app.handler = app
+        # Clean up the temporary file
+        os.remove(tmp_path)
+
+# This block allows running the app directly with `python main.py` for local testing
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+
